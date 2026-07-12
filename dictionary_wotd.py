@@ -67,6 +67,20 @@ def debug_dump(text: str) -> None:
     (DEBUG_DIR / "page_text.txt").write_text(text)
 
 
+def fix_spacing(text: str) -> str:
+    """
+    Dictionary.com bolds words inline (e.g. the word itself, mid-sentence).
+    BeautifulSoup's line-based text extraction inserts a line break at every
+    tag boundary, which - once lines are rejoined with spaces - leaves stray
+    spaces before punctuation (e.g. "au fond , let's"). This cleans that up.
+    """
+    text = re.sub(r"\s+", " ", text)
+    text = re.sub(r"\s+([,.;:!?])", r"\1", text)
+    text = re.sub(r"([\[(])\s+", r"\1", text)
+    text = re.sub(r"\s+([\])])", r"\1", text)
+    return text.strip()
+
+
 def fetch_word_of_the_day():
     """
     Returns a dict with date, word, phonetic, part_of_speech, definition,
@@ -90,45 +104,56 @@ def fetch_word_of_the_day():
         return None
 
     start = date_indices[0]
-    # The next entry (if any) marks where today's block ends
     end = date_indices[1] if len(date_indices) > 1 else len(lines)
     block = lines[start:end]
+    date_str = block[0]
 
-    try:
-        date_str = block[0]
-        word = block[1]
-        phonetic = block[2] if block[2].startswith("[") else ""
-        idx = 3 if phonetic else 2
+    # Join everything after the date into one blob and fix spacing artifacts
+    # caused by inline bold tags splitting text across "lines".
+    body = fix_spacing(" ".join(block[1:]))
 
-        part_of_speech = ""
-        if block[idx].lower() in PARTS_OF_SPEECH:
-            part_of_speech = block[idx]
-            idx += 1
-
-        definition = block[idx]
-        idx += 1
-
-        # Find "Explanation" and "Example" section markers
-        explanation_idx = next(i for i, l in enumerate(block) if l.lower() == "explanation")
-        example_idx = next(i for i, l in enumerate(block) if l.lower() == "example")
-
-        explanation = " ".join(block[explanation_idx + 1:example_idx])
-        example = " ".join(block[example_idx + 1:])
-        # Trim anything that leaked in from page furniture after the example
-        example = example.split("Get the Word of the Day")[0].strip()
-
-        return {
-            "date": date_str,
-            "word": word,
-            "phonetic": phonetic,
-            "part_of_speech": part_of_speech,
-            "definition": definition,
-            "explanation": explanation,
-            "example": example,
-        }
-    except (IndexError, StopIteration) as e:
-        log.error("Parsing failed at an unexpected spot: %s", e)
+    # Word: everything before the first "[" (the phonetic spelling starts there)
+    phon_match = re.search(r"\[([^\]]+)\]", body)
+    if not phon_match:
+        log.error("Could not find a phonetic spelling (in brackets) - layout may have changed.")
         return None
+
+    word = body[:phon_match.start()].strip()
+    phonetic = f"[{phon_match.group(1).strip()}]"
+    remainder = body[phon_match.end():].strip()
+
+    # Part of speech: the word right after the phonetic spelling, if it's
+    # one we recognize (ADVERB, VERB, etc. - dictionary.com uppercases it)
+    part_of_speech = ""
+    pos_match = re.match(r"^([A-Za-z]+)\b", remainder)
+    if pos_match and pos_match.group(1).lower() in PARTS_OF_SPEECH:
+        part_of_speech = pos_match.group(1).lower()
+        remainder = remainder[pos_match.end():].strip()
+
+    # Definition: everything up to the "EXPLANATION" marker
+    parts = re.split(r"\bEXPLANATION\b", remainder, maxsplit=1, flags=re.IGNORECASE)
+    definition = parts[0].strip()
+    rest = parts[1].strip() if len(parts) > 1 else ""
+
+    # Explanation: everything up to the "EXAMPLE" marker
+    parts = re.split(r"\bEXAMPLE\b", rest, maxsplit=1, flags=re.IGNORECASE)
+    explanation = parts[0].strip()
+    example = parts[1].strip() if len(parts) > 1 else ""
+    example = example.split("Get the Word of the Day")[0].strip()
+
+    if not word or not definition:
+        log.error("Parsing produced an empty word or definition - layout may have changed.")
+        return None
+
+    return {
+        "date": date_str,
+        "word": word,
+        "phonetic": phonetic,
+        "part_of_speech": part_of_speech,
+        "definition": definition,
+        "explanation": explanation,
+        "example": example,
+    }
 
 
 def main():
