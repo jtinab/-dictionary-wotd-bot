@@ -3,7 +3,7 @@ name: Dictionary.com Word of the Day
 on:
   schedule:
     # 14:00 UTC = 10:00 PM Singapore Time (UTC+8)
-    - cron: "0 14 * * *"
+    - cron: "0 */3 * * *"
   workflow_dispatch: {}
 
 permissions:
